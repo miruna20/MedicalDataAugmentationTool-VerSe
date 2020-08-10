@@ -1,7 +1,7 @@
 # use tensorflow base image
 FROM tensorflow/tensorflow:1.14.0-py3 as base
 # install python dependencies
-RUN pip3 install SimpleITK itk scikit-image cachetools
+RUN pip3 install SimpleITK itk scikit-image cachetools nibabel pandas
 ADD MedicalDataAugmentationTool /MedicalDataAugmentationTool
 # copy verse files
 ADD MedicalDataAugmentationTool-VerSe/docker/models /models
