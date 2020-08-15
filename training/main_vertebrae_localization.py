@@ -42,7 +42,8 @@ class MainLoop(MainLoopBase):
         self.learning_rates = [learning_rate, learning_rate * 0.5, learning_rate * 0.1]
         self.learning_rate_boundaries = [50000, 75000]
         self.max_iter = 100000
-        self.test_iter = 10000
+	#ToDo: change back if we want validation
+        self.test_iter = 1000000
         self.disp_iter = 100
         self.snapshot_iter = 5000
         self.test_initialization = False
