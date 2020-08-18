@@ -99,7 +99,7 @@ def crop(image_path,coord):
     resZ = image.header.get_zooms()[2]
     offset_pixel = offset_mm / resZ
     # obtain random number along the interval
-    randNr = random.randint(int(coord[2] - offset_pixel), int(coord[2] + offset_pixel))
+    randNr = random.randint((coord[2] - offset_pixel), (coord[2] + offset_pixel))
     nib.save(image.slicer[0:image.shape[0], 0:image.shape[1], randNr:image.shape[2]],image_path)
 
     return randNr
@@ -113,6 +113,7 @@ def adapt_coordinates(valid_landmarks_dataset,valid_coords_dataset,cropping_para
 
 def adapt_images(imagesFolder, valid_labels_datasets, valid_coords_datasets,cropping_info):
 
+    cropping_params = {}
     #iterate in the folder
     for image in os.listdir(imagesFolder):
         temp = image.replace("_",".") #this is for the _seg.nii.gz
@@ -129,7 +130,7 @@ def adapt_images(imagesFolder, valid_labels_datasets, valid_coords_datasets,crop
                 coord_Th2 = cropping_info[name_image]
 
                 cropping_param = crop(os.path.join(imagesFolder,image),coord_Th2)
-
+                cropping_params[name_image] = cropping_param
                 #adjust the coord[2] = z axis here directly according to the cropping number for each vertebra
                 valid_coords_datasets[name_image] = adapt_coordinates(valid_labels_datasets[name_image],valid_coords_datasets[name_image],cropping_param)
             else:
@@ -139,10 +140,11 @@ def adapt_images(imagesFolder, valid_labels_datasets, valid_coords_datasets,crop
             os.remove(os.path.join(imagesFolder,image))
             print(image + "will be removed, does not have cervical")
 
-    return valid_coords_datasets
+    return valid_coords_datasets,cropping_params
 
 
 if __name__ == '__main__':
+
     parser = argparse.ArgumentParser()
 
     #parse the console arguments
@@ -159,9 +161,11 @@ if __name__ == '__main__':
 
     #remove images if they do not have cervical
     #crop them if they do AND change the coordinates according to how much we cropped
-    valid_coord_datasets = adapt_images(parser.reorientedImagesFolder,valid_labels_datasets,valid_coord_datasets, cropping_info)
+    valid_coord_datasets,cropping_params = adapt_images(parser.reorientedImagesFolder,valid_labels_datasets,valid_coord_datasets, cropping_info)
 
 
     #after finishing save the labels accordingly
     save_dict_csv(valid_labels_datasets, landmarkLabels)
     save_dict_csv(valid_coord_datasets, landmarkCoords)
+
+    save_dict_csv(cropping_params,os.path.join(parser.reorientedImagesFolder,"cropping_params.csv"))
