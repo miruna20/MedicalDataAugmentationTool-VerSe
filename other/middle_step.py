@@ -99,7 +99,7 @@ def crop(image_path,coord):
     resZ = image.header.get_zooms()[2]
     offset_pixel = offset_mm / resZ
     # obtain random number along the interval
-    randNr = random.randint((coord[2] - offset_pixel), (coord[2] + offset_pixel))
+    randNr = random.randint(int(coord[2] - offset_pixel), int(coord[2] + offset_pixel))
     nib.save(image.slicer[0:image.shape[0], 0:image.shape[1], randNr:image.shape[2]],image_path)
 
     return randNr
