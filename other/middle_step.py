@@ -59,7 +59,7 @@ def adapt_landmarks(landmarksFolder):
 
 
     valid_coord_datasets = {}
-    cropping_info = {}
+    coordinates_T2 = {}
     for index, row in coord.itertuples():
         valid_coord_dataset = []
         splitted = row.split(',')
@@ -67,7 +67,7 @@ def adapt_landmarks(landmarksFolder):
         if curr_dataset in valid_labels_datasets.keys():
             #coordinates needed for cropping if the certain dataset has Th2 included
             if (splitted[25] != "nan"):
-                cropping_info[curr_dataset] = [float(splitted[25]), float(splitted[26]), float(splitted[27])]
+                coordinates_T2[curr_dataset] = [float(splitted[25]), float(splitted[26]), float(splitted[27])]
 
             for i in range(1, 22):
                 valid_coord_dataset.append(splitted[i])
@@ -76,10 +76,9 @@ def adapt_landmarks(landmarksFolder):
 
             valid_coord_datasets[curr_dataset] = valid_coord_dataset
 
-    return valid_labels_datasets,valid_coord_datasets,cropping_info
+    return valid_labels_datasets,valid_coord_datasets,coordinates_T2
 
 def crop(image_path,coord):
-    offset_mm = 20  # in mm
 
     if not image_path.endswith(".nii.gz"):
         print("cannot crop files which are not in NifTi format")
@@ -92,17 +91,14 @@ def crop(image_path,coord):
     reader.SetFileName(image_path)
     reader.LoadPrivateTagsOn()
     reader.ReadImageInformation()
-    image2 = reader
 
-
-    # obtain the resolution on the z axis
     resZ = image.header.get_zooms()[2]
-    offset_pixel = offset_mm / resZ
-    # obtain random number along the interval
-    randNr = random.randint(int(coord[2] - offset_pixel), int(coord[2] + offset_pixel))
-    nib.save(image.slicer[0:image.shape[0], 0:image.shape[1], randNr:image.shape[2]],image_path)
+    cropping_point = int(round(coord[2] / resZ))
 
-    return randNr
+    #crop exactly in the middle of T2
+    nib.save(image.slicer[0:image.shape[0], 0:image.shape[1], cropping_point:image.shape[2]],image_path)
+
+    return cropping_point
 
 
 def adapt_coordinates(valid_landmarks_dataset,valid_coords_dataset,cropping_param):
@@ -113,7 +109,6 @@ def adapt_coordinates(valid_landmarks_dataset,valid_coords_dataset,cropping_para
 
 def adapt_images(imagesFolder, valid_labels_datasets, valid_coords_datasets,cropping_info):
 
-    cropping_params = {}
     #iterate in the folder
     for image in os.listdir(imagesFolder):
         temp = image.replace("_",".") #this is for the _seg.nii.gz
@@ -129,10 +124,10 @@ def adapt_images(imagesFolder, valid_labels_datasets, valid_coords_datasets,crop
                 #save the 3 coordinates of Th2=label8
                 coord_Th2 = cropping_info[name_image]
 
-                cropping_param = crop(os.path.join(imagesFolder,image),coord_Th2)
-                cropping_params[name_image] = cropping_param
+                cropping_point = crop(os.path.join(imagesFolder,image),coord_Th2)
+                cropping_info[name_image] = cropping_point
                 #adjust the coord[2] = z axis here directly according to the cropping number for each vertebra
-                valid_coords_datasets[name_image] = adapt_coordinates(valid_labels_datasets[name_image],valid_coords_datasets[name_image],cropping_param)
+                valid_coords_datasets[name_image] = adapt_coordinates(valid_labels_datasets[name_image],valid_coords_datasets[name_image],cropping_point)
             else:
                 print(name_image + " does not have Th2 so it does not need to be cropped")
         else:
@@ -140,7 +135,7 @@ def adapt_images(imagesFolder, valid_labels_datasets, valid_coords_datasets,crop
             os.remove(os.path.join(imagesFolder,image))
             print(image + "will be removed, does not have cervical")
 
-    return valid_coords_datasets,cropping_params
+    return valid_coords_datasets
 
 
 if __name__ == '__main__':
@@ -151,7 +146,6 @@ if __name__ == '__main__':
     parser.add_argument("--landmarksFolder", help="folder with the landmark labels and coordinates",required=True)
     parser.add_argument("--reorientedImagesFolder", help="folder with the rai oriented images")
     parser = parser.parse_args()
-    #print(parser.landmarksFolder)
 
     landmarkLabels = os.path.join(parser.landmarksFolder, "valid_landmarks.csv")
     landmarkCoords = os.path.join(parser.landmarksFolder, "landmarks.csv")
@@ -161,11 +155,12 @@ if __name__ == '__main__':
 
     #remove images if they do not have cervical
     #crop them if they do AND change the coordinates according to how much we cropped
-    valid_coord_datasets,cropping_params = adapt_images(parser.reorientedImagesFolder,valid_labels_datasets,valid_coord_datasets, cropping_info)
+    valid_coord_datasets = adapt_images(parser.reorientedImagesFolder,valid_labels_datasets,valid_coord_datasets, cropping_info)
 
 
     #after finishing save the labels accordingly
     save_dict_csv(valid_labels_datasets, landmarkLabels)
     save_dict_csv(valid_coord_datasets, landmarkCoords)
 
-    save_dict_csv(cropping_params,os.path.join(parser.reorientedImagesFolder,"cropping_params.csv"))
+    #save also the coordinates for T2 for every dataset in order to be able to pad in the end
+    save_dict_csv(cropping_info,os.path.join(parser.reorientedImagesFolder,"landmarks_T2.csv"))
