@@ -98,8 +98,6 @@ def crop(image_path,coord):
     #crop exactly in the middle of T2
     nib.save(image.slicer[0:image.shape[0], 0:image.shape[1], cropping_point:image.shape[2]],image_path)
 
-    return cropping_point
-
 
 def adapt_coordinates(valid_landmarks_dataset,valid_coords_dataset,cropping_param):
     for label in valid_landmarks_dataset:
@@ -124,10 +122,10 @@ def adapt_images(imagesFolder, valid_labels_datasets, valid_coords_datasets,crop
                 #save the 3 coordinates of Th2=label8
                 coord_Th2 = cropping_info[name_image]
 
-                cropping_point = crop(os.path.join(imagesFolder,image),coord_Th2)
-                cropping_info[name_image] = cropping_point
+                crop(os.path.join(imagesFolder,image),coord_Th2)
+                cropping_info[name_image] = coord_Th2[2]
                 #adjust the coord[2] = z axis here directly according to the cropping number for each vertebra
-                valid_coords_datasets[name_image] = adapt_coordinates(valid_labels_datasets[name_image],valid_coords_datasets[name_image],cropping_point)
+                valid_coords_datasets[name_image] = adapt_coordinates(valid_labels_datasets[name_image],valid_coords_datasets[name_image],coord_Th2[2])
             else:
                 print(name_image + " does not have Th2 so it does not need to be cropped")
         else:
