@@ -98,6 +98,8 @@ def crop(image_path,coord):
     #crop exactly in the middle of T2
     nib.save(image.slicer[0:image.shape[0], 0:image.shape[1], cropping_point:image.shape[2]],image_path)
 
+    return cropping_point
+
 
 def adapt_coordinates(valid_landmarks_dataset,valid_coords_dataset,cropping_param):
     for label in valid_landmarks_dataset:
@@ -122,8 +124,8 @@ def adapt_images(imagesFolder, valid_labels_datasets, valid_coords_datasets,crop
                 #save the 3 coordinates of Th2=label8
                 coord_Th2 = cropping_info[name_image]
 
-                crop(os.path.join(imagesFolder,image),coord_Th2)
-                cropping_info[name_image] = coord_Th2[2]
+
+                cropping_info[name_image] = crop(os.path.join(imagesFolder,image),coord_Th2)
                 #adjust the coord[2] = z axis here directly according to the cropping number for each vertebra
                 valid_coords_datasets[name_image] = adapt_coordinates(valid_labels_datasets[name_image],valid_coords_datasets[name_image],coord_Th2[2])
             else:
@@ -133,7 +135,7 @@ def adapt_images(imagesFolder, valid_labels_datasets, valid_coords_datasets,crop
             os.remove(os.path.join(imagesFolder,image))
             print(image + "will be removed, does not have cervical")
 
-    return valid_coords_datasets
+    return valid_coords_datasets,cropping_info
 
 
 if __name__ == '__main__':
@@ -153,7 +155,7 @@ if __name__ == '__main__':
 
     #remove images if they do not have cervical
     #crop them if they do AND change the coordinates according to how much we cropped
-    valid_coord_datasets = adapt_images(parser.reorientedImagesFolder,valid_labels_datasets,valid_coord_datasets, cropping_info)
+    valid_coord_datasets,cropping_info = adapt_images(parser.reorientedImagesFolder,valid_labels_datasets,valid_coord_datasets, cropping_info)
 
 
     #after finishing save the labels accordingly
@@ -161,4 +163,4 @@ if __name__ == '__main__':
     save_dict_csv(valid_coord_datasets, landmarkCoords)
 
     #save also the coordinates for T2 for every dataset in order to be able to pad in the end
-    save_dict_csv(cropping_info,os.path.join(parser.reorientedImagesFolder,"landmarks_T2.csv"))
+    save_dict_csv(cropping_info,os.path.join(parser.reorientedImagesFolder,"landmarks_T2_adapted.csv"))

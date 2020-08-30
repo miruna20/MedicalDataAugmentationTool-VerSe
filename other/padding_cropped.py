@@ -16,13 +16,13 @@ if __name__ == '__main__':
     imagesFolder = parser.reorientedImagesFolder
     croppingFolder = parser.croppingInfo
 
-    cropping_params = pd.read_csv(os.path.join(croppingFolder,"cropping_params.csv"), sep=';', header=None)
+    cropping_params = pd.read_csv(os.path.join(croppingFolder,"landmarks_T2_adapted.csv"), sep=';', header=None)
 
     for index, row in cropping_params.itertuples():
         splitted = row.split(',')
         name_image = splitted[0]
         cropping_param = int(splitted[1])
-        image = nib.load(os.path.join(imagesFolder,name_image + ".nii.gz"))
+        image = nib.load(os.path.join(imagesFolder,name_image + "_seg.nii.gz"))
         img_numpyarray = np.array(image.dataobj)
         shape_pic = np.shape(img_numpyarray)
         padded_array = np.zeros((shape_pic[0], shape_pic[1], shape_pic[2] + cropping_param))
@@ -30,6 +30,6 @@ if __name__ == '__main__':
         padded_array[0:shape_pic[0], 0:shape_pic[1],cropping_param:(shape_pic[2] + cropping_param)] = img_numpyarray
 
         new_image = nib.Nifti1Image(padded_array, image.affine)
-        nib.save(new_image, os.path.join(imagesFolder,name_image + ".nii.gz"))
+        nib.save(new_image, os.path.join(imagesFolder,name_image + "_seg.nii.gz"))
 
 
