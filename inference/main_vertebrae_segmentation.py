@@ -9,6 +9,9 @@ import numpy as np
 import os
 import traceback
 import tensorflow as tf
+import matplotlib.pyplot as plt
+import time
+import math
 
 import utils.io.image
 import utils.io.text
@@ -20,6 +23,7 @@ from tensorflow_train.train_loop import MainLoopBase
 from tensorflow_train.utils.tensorflow_util import create_placeholders_tuple
 from utils.segmentation.segmentation_test import SegmentationTest
 import utils.np_image
+
 
 
 class MainLoop(MainLoopBase):
@@ -66,6 +70,43 @@ class MainLoop(MainLoopBase):
         prediction = np.squeeze(run_tuple[0], axis=0)
 
         return prediction
+
+    def featureMapViz_test_full_image(self,image,heatmap):
+        self.getActivations('net/local/output/Conv3D',image,heatmap)
+
+    def getActivations(self, layer, image, heatmap):
+        #ToDo find the name of the layer from which we want the output
+        units = self.sess.run((self.prediction_val,),feed_dict={self.data_val: np.expand_dims(image, axis=0),
+                     self.single_heatmap_val: np.expand_dims(heatmap, axis=0)})
+        #feature channel is located in units[0]
+        self.plotNNFilter(units[0])
+
+    def plotNNFilter(self, fc):
+        #ToDo: adapt to our network
+        #fc is an ndarray with (1-->batch,96,128,128,1--> channel) => create 96 photos of 128 x 128
+        for i in range(fc.shape[1]):
+            #temp should have (128,128)
+            temp = fc[0,i,:,:,0]
+            #print("temp shape:" + str(temp.shape))
+            plt.figure(1, figsize=(128, 128))
+            plt.subplot(1,1,1)
+            plt.title('Slice with z = ' + str(i))
+            plt.imshow(temp,interpolation="nearest",cmap="gray")
+            #time.sleep(5)
+            #plt.show()
+            plt.savefig("/home/miruna20/Documents/BachThes/training/Experiment2/results_inference/debug_emptyseg" + "/z" + str(i) + ".png")
+
+
+        #filters = units.shape[4]
+        ##plt.figure(1, figsize=(128, 128))
+        #n_columns = 6
+        #n_rows = math.ceil(filters / n_columns) + 1
+        #for i in range(filters):
+         #   plt.subplot(n_rows, n_columns, i + 1)
+          #  plt.title('Filter ' + str(i))
+           # plt.imshow(units[0, :, :, i], interpolation="nearest", cmap="gray")
+
+
 
 
 class InferenceLoop(object):
@@ -135,6 +176,20 @@ class InferenceLoop(object):
 
         return image, prediction, transformation
 
+    def featureMapViz_test_full_image(self,dataset_entry):
+        generators = dataset_entry['generators']
+        transformations = dataset_entry['transformations']
+        predictions = []
+        for load_model_filename in self.load_model_filenames:
+            if len(self.load_model_filenames) > 1:
+                self.network_loop.load_model_filename = load_model_filename
+                self.network_loop.load_model()
+            self.network_loop.featureMapViz_test_full_image(generators['image'], generators['single_heatmap'])
+        transformation = transformations['image']
+        image = generators['image']
+
+        return image, transformation
+
     def test(self):
         print('Testing...')
 
@@ -190,6 +245,8 @@ class InferenceLoop(object):
                     if self.save_debug_images:
                         utils.io.image.write_multichannel_np(image, self.output_file_for_current_iteration(image_id + '_' + landmark_id + '_input.mha'), normalization_mode='min_max', split_channel_axis=True, sitk_image_mode='default', data_format=self.data_format, image_type=np.uint8, spacing=self.image_spacing, origin=origin)
                         utils.io.image.write_multichannel_np(prediction, self.output_file_for_current_iteration(image_id + '_' + landmark_id + '_prediction.mha'), normalization_mode=(0, 1), split_channel_axis=True, sitk_image_mode='default', data_format=self.data_format, image_type=np.uint8, spacing=self.image_spacing, origin=origin)
+                        #utils.io.image.write_np(image, self.output_file_for_current_iteration(image_id + '_' + landmark_id + '_input.mha'))
+                        #utils.io.image.write_np(prediction, self.output_file_for_current_iteration(image_id + '_' + landmark_id + '_prediction.mha'))
 
                     prediction_resampled_sitk = utils.sitk_image.transform_np_output_to_sitk_input(output_image=prediction,
                                                                                         output_spacing=self.image_spacing,
@@ -210,6 +267,55 @@ class InferenceLoop(object):
                 print(traceback.format_exc())
                 print('ERROR predicting', image_id)
                 pass
+    def getFeatureMaps_test(self):
+        print('Getting feature maps...')
+
+        channel_axis = 0
+        if self.data_format == 'channels_last':
+            channel_axis = 3
+
+        if len(self.load_model_filenames) == 1:
+            self.network_loop.load_model_filename = self.load_model_filenames[0]
+            self.network_loop.load_model()
+
+        labels = list(range(self.num_labels_all))
+        interpolator = 'linear'
+        filter_largest_cc = True
+        segmentation_test = SegmentationTest(labels,
+                                             channel_axis=channel_axis,
+                                             interpolator=interpolator,
+                                             largest_connected_component=False,
+                                             all_labels_are_connected=False)
+
+        for image_id in self.image_id_list:
+            try:
+                print(image_id)
+                first = True
+                prediction_resampled_np = None
+                input_image = None
+                for landmark_id in self.valid_landmarks[image_id]:
+                    dataset_entry = self.dataset_val.get({'image_id': image_id, 'landmark_id' : landmark_id})
+                    datasources = dataset_entry['datasources']
+                    if first:
+                        input_image = datasources['image']
+                        if self.data_format == 'channels_first':
+                            prediction_resampled_np = np.zeros([self.num_labels_all] + list(reversed(input_image.GetSize())), dtype=np.float16)
+                            prediction_resampled_np[0, ...] = 0.5
+                        else:
+                            prediction_resampled_np = np.zeros(list(reversed(input_image.GetSize())) + [self.num_labels_all], dtype=np.float16)
+                            prediction_resampled_np[..., 0] = 0.5
+                        first = False
+
+                    # from test_full_images
+                    if image_id == "verse230" and landmark_id == "3":
+                        self.featureMapViz_test_full_image(dataset_entry)
+
+            except:
+                print(traceback.format_exc())
+                print('ERROR predicting', image_id)
+                pass
+
+
 
 
 if __name__ == '__main__':
@@ -222,4 +328,4 @@ if __name__ == '__main__':
     network_parameters = OrderedDict([('num_filters_base', 64), ('double_features_per_level', False), ('num_levels', 5), ('activation', 'relu')])
     loop = InferenceLoop(network_u, UnetClassicAvgLinear3d, network_parameters, parser_args.image_folder, parser_args.setup_folder, parser_args.model_files, parser_args.output_folder)
     loop.test()
-
+    #loop.getFeatureMaps_test()
