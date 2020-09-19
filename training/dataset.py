@@ -61,7 +61,8 @@ class Dataset(object):
                  heatmap_sigma=3.0,
                  spine_heatmap_sigma=3.0,
                  data_format='channels_first',
-                 save_debug_images=False):
+                 save_debug_images=False,
+                 disorder_context=False):
         """
         Initializer.
         :param image_size: Network input image size.
@@ -117,6 +118,7 @@ class Dataset(object):
         self.random_intensity_shift = random_intensity_shift
         self.random_intensity_scale = random_intensity_scale
         self.random_translation_single_landmark = random_translation_single_landmark
+        self.disorder_context = disorder_context
 
         self.num_landmarks = num_landmarks
         self.num_labels = num_labels
@@ -254,6 +256,7 @@ class Dataset(object):
                                                   image_size,
                                                   self.image_spacing,
                                                   interpolator='linear',
+                                                  context_disordering=self.disorder_context,
                                                   post_processing_np=image_post_processing,
                                                   data_format=self.data_format,
                                                   resample_default_pixel_value=self.image_default_pixel_value,
@@ -264,6 +267,7 @@ class Dataset(object):
                                                               image_size,
                                                               self.image_spacing,
                                                               interpolator='nearest',
+                                                              context_disordering=self.disorder_context,
                                                               data_format=self.data_format,
                                                               resample_default_pixel_value=0,
                                                               name='landmark_mask',
@@ -273,7 +277,8 @@ class Dataset(object):
                                                        image_size,
                                                        self.image_spacing,
                                                        interpolator='nearest',
-                                                       post_processing_np=self.split_labels,
+                                                       context_disordering=False,
+                                                       post_processing_np=None,
                                                        data_format=self.data_format,
                                                        name='labels',
                                                        parents=[datasources['labels'], transformation])
@@ -386,12 +391,18 @@ class Dataset(object):
             single_landmark = LambdaNode(lambda id_dict, landmarks: [landmarks[int(id_dict['landmark_id'])]],
                                          parents=[iterator, datasources['landmarks']])
             kwparents['landmarks'] = single_landmark
+            #ToDo understand better what is meant by this:
+            #landmark.Center centers the given landmark at the origin
+            #uses the mean of all landmarks as the center coordinate.
             transformation_list.append(landmark.Center(self.dim, True))
+            #translation transformation with a fixed offset
             transformation_list.append(translation.Fixed(self.dim, [0, 20, 0]))
         else:
             transformation_list.append(translation.InputCenterToOrigin(self.dim))
         if self.translate_by_random_factor:
             transformation_list.append(translation.RandomFactorInput(self.dim, [0, 0, 0.5], [0, 0, self.image_spacing[2] * image_size[2]]))
+
+        #random augmentation is performed here
         transformation_list.extend([translation.Random(self.dim, [self.random_translation] * self.dim),
                                     rotation.Random(self.dim, [self.random_rotate] * self.dim),
                                     scale.RandomUniform(self.dim, self.random_scale),
@@ -438,7 +449,11 @@ class Dataset(object):
         iterator = self.iterator(self.train_file, True)
         sources = self.datasources(iterator, True)
         image_size = self.image_size
-        reference_transformation = self.spatial_transformation_augmented(iterator, sources, image_size)
+        #in case we pretrain with context disordering do not apply data augmentation
+        if self.disorder_context:
+            reference_transformation = self.spatial_transformation(iterator, sources, image_size)
+        else:
+            reference_transformation = self.spatial_transformation_augmented(iterator,sources,image_size)
         generators = self.data_generators(iterator, sources, reference_transformation, self.postprocessing_random, True, image_size)
         if self.generate_single_vertebrae and not self.generate_labels:
             del generators['labels']
@@ -447,7 +462,7 @@ class Dataset(object):
                             data_sources=list(sources.values()),
                             transformations=[reference_transformation],
                             iterator=iterator,
-                            debug_image_folder='debug_train' if self.save_debug_images else None)
+                            debug_image_folder='/home/payer/training/debug_train' if self.save_debug_images else None)
 
     def dataset_val(self):
         """

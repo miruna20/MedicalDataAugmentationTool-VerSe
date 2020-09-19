@@ -36,6 +36,7 @@ class MainLoop(MainLoopBase):
         """
         super().__init__()
         self.batch_size = 1
+        self.disorder_context = True
         self.learning_rates = [learning_rate, learning_rate * 0.5, learning_rate * 0.1]
         self.learning_rate_boundaries = [20000, 30000]
         self.max_iter = 50000
@@ -58,7 +59,8 @@ class MainLoop(MainLoopBase):
         self.use_pyro_dataset = False
         self.save_output_images = True
         self.save_output_images_as_uint = True  # set to False, if you want to see the direct network output
-        self.save_debug_images = False
+        #changed the debug_images to True so that visualization is enabled
+        self.save_debug_images = True
         self.has_validation_groundtruth = cv in [0, 1, 2]
         self.local_base_folder = '../verse2019_dataset'
         self.image_size = [128, 128, 96]
@@ -73,6 +75,7 @@ class MainLoop(MainLoopBase):
                               'heatmap_sigma': 3.0,
                               'generate_single_vertebrae_heatmap': True,
                               'generate_single_vertebrae': True,
+                              'disorder_context':self.disorder_context,
                               'save_debug_images': self.save_debug_images}
 
         dataset = Dataset(**dataset_parameters)

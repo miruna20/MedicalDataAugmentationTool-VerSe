@@ -86,7 +86,7 @@ class InferenceLoop(object):
         self.padding = 'same'
         self.image_size = [128, 128, 96]
         self.image_spacing = [1] * 3
-        self.save_debug_images = False
+        self.save_debug_images = True
         self.output_folder = os.path.join(output_base_folder, 'vertebrae_segmentation')
         dataset_parameters = {'cv': 'inference',
                               'image_base_folder': self.image_base_folder,
