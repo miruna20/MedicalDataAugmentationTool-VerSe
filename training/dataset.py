@@ -508,4 +508,4 @@ class Dataset(object):
                             data_sources=list(sources.values()),
                             transformations=[reference_transformation],
                             iterator=iterator,
-                            debug_image_folder='debug_val' if self.save_debug_images else None)
+                            debug_image_folder='/home/payer/training/debug_val' if self.save_debug_images else None)

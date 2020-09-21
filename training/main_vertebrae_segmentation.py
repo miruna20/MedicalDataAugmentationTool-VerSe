@@ -22,7 +22,7 @@ import os
 import SimpleITK as sitk
 import utils.io.text
 import utils.np_image
-
+import nibabel as nib
 
 class MainLoop(MainLoopBase):
     def __init__(self, cv, network, unet, network_parameters, learning_rate, output_folder_name=''):
@@ -40,10 +40,14 @@ class MainLoop(MainLoopBase):
         self.disorder_context = True
         self.learning_rates = [learning_rate, learning_rate * 0.5, learning_rate * 0.1]
         self.learning_rate_boundaries = [20000, 30000]
-        self.max_iter = 50000
-        self.test_iter = 5000
-        self.disp_iter = 100
-        self.snapshot_iter = 5000
+        #self.max_iter = 50000
+        self.max_iter = 500
+        #self.test_iter = 5000
+        self.test_iter = 50
+        #self.disp_iter = 100
+        self.disp_iter = 10
+        #self.snapshot_iter = 5000
+        self.snapshot_iter = 50
         self.test_initialization = False
         self.current_iter = 0
         self.reg_constant = 0.000001
@@ -193,94 +197,132 @@ class MainLoop(MainLoopBase):
         """
         The test function. Performs inference on the the validation images and calculates the loss.
         """
-        print('Testing...')
 
-        channel_axis = 0
-        if self.data_format == 'channels_last':
-            channel_axis = 3
-        labels = list(range(self.num_labels_all))
-        segmentation_test = SegmentationTest(labels,
-                                             channel_axis=channel_axis,
-                                             largest_connected_component=False,
-                                             all_labels_are_connected=False)
-        segmentation_statistics = SegmentationStatistics(list(range(self.num_labels_all)),
-                                                         self.output_folder_for_current_iteration(),
-                                                         metrics=OrderedDict([('dice', DiceMetric()),
-                                                                              ('h', HausdorffDistanceMetric())]))
-        filter_largest_cc = True
+        if(self.disorder_context):
+            print("Testing in Context Disordering Mode")
+            channel_axis = 0
+            if self.data_format == 'channels_last':
+                channel_axis = 3
 
-        # iterate over all images
-        for i, image_id in enumerate(self.test_id_list):
-            first = True
-            prediction_resampled_np = None
-            input_image = None
-            groundtruth = None
-            # iterate over all valid landmarks
-            for landmark_id in self.valid_landmarks[image_id]:
-                dataset_entry = self.dataset_val.get({'image_id': image_id, 'landmark_id' : landmark_id})
-                datasources = dataset_entry['datasources']
-                if first:
-                    input_image = datasources['image']
-                    if self.has_validation_groundtruth:
-                        groundtruth = datasources['labels']
-                    prediction_resampled_np = np.zeros([self.num_labels_all] + list(reversed(input_image.GetSize())), dtype=np.float16)
-                    prediction_resampled_np[0, ...] = 0.5
-                    first = False
+            for i, image_id in enumerate(self.test_id_list):
+                first = True
+                input_image = None
+                groundtruth = None
+                # iterate over all valid landmarks
+                for landmark_id in self.valid_landmarks[image_id]:
+                    dataset_entry = self.dataset_val.get({'image_id': image_id, 'landmark_id': landmark_id})
+                    datasources = dataset_entry['datasources']
+                    if first:
+                        input_image = datasources['image']
+                        if self.has_validation_groundtruth:
+                            groundtruth = datasources['labels']
+                        first = False
 
-                image, prediction, transformation = self.test_full_image(dataset_entry)
+                    image, prediction, transformation = self.test_full_image(dataset_entry)
 
-                if filter_largest_cc:
-                    prediction_thresh_np = (prediction > 0.5).astype(np.uint8)
-                    largest_connected_component = utils.np_image.largest_connected_component(prediction_thresh_np[0])
-                    prediction_thresh_np[largest_connected_component[None, ...] == 1] = 0
-                    prediction[prediction_thresh_np == 1] = 0
+                    imageToSavenp = prediction[0, :, :, :]
+                    img = nib.Nifti1Image(imageToSavenp, None)
+                    path = os.path.join("/home/payer/training/debug_train", "estimation_" + str(image_id) + "_" + str(landmark_id) + "_" + str(self.current_iter) + ".nii.gz")
+                    nib.save(img, path)
 
-                if self.save_output_images:
-                    if self.save_output_images_as_uint:
-                        image_normalization = 'min_max'
-                        label_normalization = (0, 1)
-                        output_image_type = np.uint8
+                    imageToSavenp = image[0, :, :, :]
+                    img = nib.Nifti1Image(imageToSavenp, None)
+                    path = os.path.join("/home/payer/training/debug_train",
+                                        "image_" + str(image_id) + "_" + str(landmark_id) + "_" + str(
+                                            self.current_iter) + ".nii.gz")
+                    nib.save(img, path)
+
+        else:
+            print('Testing...')
+            channel_axis = 0
+            if self.data_format == 'channels_last':
+                channel_axis = 3
+            labels = list(range(self.num_labels_all))
+            #ToDo(MG) what does this segmentation_test do?
+            segmentation_test = SegmentationTest(labels,
+                                                 channel_axis=channel_axis,
+                                                 largest_connected_component=False,
+                                                 all_labels_are_connected=False)
+
+            #ToDo(MG) what metrics will we be using?
+            segmentation_statistics = SegmentationStatistics(list(range(self.num_labels_all)),
+                                                             self.output_folder_for_current_iteration(),
+                                                             metrics=OrderedDict([('dice', DiceMetric()),
+                                                                                  ('h', HausdorffDistanceMetric())]))
+            filter_largest_cc = True
+
+            # iterate over all images
+            for i, image_id in enumerate(self.test_id_list):
+                first = True
+                prediction_resampled_np = None
+                input_image = None
+                groundtruth = None
+                # iterate over all valid landmarks
+                for landmark_id in self.valid_landmarks[image_id]:
+                    dataset_entry = self.dataset_val.get({'image_id': image_id, 'landmark_id' : landmark_id})
+                    datasources = dataset_entry['datasources']
+                    if first:
+                        input_image = datasources['image']
+                        if self.has_validation_groundtruth:
+                            groundtruth = datasources['labels']
+                        prediction_resampled_np = np.zeros([self.num_labels_all] + list(reversed(input_image.GetSize())), dtype=np.float16)
+                        prediction_resampled_np[0, ...] = 0.5
+                        first = False
+
+                    image, prediction, transformation = self.test_full_image(dataset_entry)
+
+                    if filter_largest_cc:
+                        prediction_thresh_np = (prediction > 0.5).astype(np.uint8)
+                        largest_connected_component = utils.np_image.largest_connected_component(prediction_thresh_np[0])
+                        prediction_thresh_np[largest_connected_component[None, ...] == 1] = 0
+                        prediction[prediction_thresh_np == 1] = 0
+
+                    if self.save_output_images:
+                        if self.save_output_images_as_uint:
+                            image_normalization = 'min_max'
+                            label_normalization = (0, 1)
+                            output_image_type = np.uint8
+                        else:
+                            image_normalization = None
+                            label_normalization = None
+                            output_image_type = np.float32
+                        origin = transformation.TransformPoint(np.zeros(3, np.float64))
+                        utils.io.image.write_multichannel_np(image, self.output_file_for_current_iteration(image_id + '_' + landmark_id + '_input.mha'), normalization_mode=image_normalization, split_channel_axis=True, sitk_image_mode='default', data_format=self.data_format, image_type=output_image_type, spacing=self.image_spacing, origin=origin)
+                        utils.io.image.write_multichannel_np(prediction, self.output_file_for_current_iteration(image_id + '_' + landmark_id + '_prediction.mha'), normalization_mode=label_normalization, split_channel_axis=True, sitk_image_mode='default', data_format=self.data_format, image_type=output_image_type, spacing=self.image_spacing, origin=origin)
+
+                    prediction_resampled_sitk = utils.sitk_image.transform_np_output_to_sitk_input(output_image=prediction,
+                                                                                                   output_spacing=self.image_spacing,
+                                                                                                   channel_axis=channel_axis,
+                                                                                                   input_image_sitk=input_image,
+                                                                                                   transform=transformation,
+                                                                                                   interpolator='linear',
+                                                                                                   output_pixel_type=sitk.sitkFloat32)
+                    #utils.io.image.write(prediction_resampled_sitk[0],  self.output_file_for_current_iteration(image_id + '_' + landmark_id + '_resampled.mha'))
+                    if self.data_format == 'channels_first':
+                        prediction_resampled_np[int(landmark_id) + 1, ...] = utils.sitk_np.sitk_to_np(prediction_resampled_sitk[0])
                     else:
-                        image_normalization = None
-                        label_normalization = None
-                        output_image_type = np.float32
-                    origin = transformation.TransformPoint(np.zeros(3, np.float64))
-                    utils.io.image.write_multichannel_np(image, self.output_file_for_current_iteration(image_id + '_' + landmark_id + '_input.mha'), normalization_mode=image_normalization, split_channel_axis=True, sitk_image_mode='default', data_format=self.data_format, image_type=output_image_type, spacing=self.image_spacing, origin=origin)
-                    utils.io.image.write_multichannel_np(prediction, self.output_file_for_current_iteration(image_id + '_' + landmark_id + '_prediction.mha'), normalization_mode=label_normalization, split_channel_axis=True, sitk_image_mode='default', data_format=self.data_format, image_type=output_image_type, spacing=self.image_spacing, origin=origin)
+                        prediction_resampled_np[..., int(landmark_id) + 1] = utils.sitk_np.sitk_to_np(prediction_resampled_sitk[0])
+                prediction_labels = segmentation_test.get_label_image(prediction_resampled_np, reference_sitk=input_image)
+                # delete to save memory
+                del prediction_resampled_np
+                utils.io.image.write(prediction_labels, self.output_file_for_current_iteration(image_id + '.mha'))
 
-                prediction_resampled_sitk = utils.sitk_image.transform_np_output_to_sitk_input(output_image=prediction,
-                                                                                               output_spacing=self.image_spacing,
-                                                                                               channel_axis=channel_axis,
-                                                                                               input_image_sitk=input_image,
-                                                                                               transform=transformation,
-                                                                                               interpolator='linear',
-                                                                                               output_pixel_type=sitk.sitkFloat32)
-                #utils.io.image.write(prediction_resampled_sitk[0],  self.output_file_for_current_iteration(image_id + '_' + landmark_id + '_resampled.mha'))
-                if self.data_format == 'channels_first':
-                    prediction_resampled_np[int(landmark_id) + 1, ...] = utils.sitk_np.sitk_to_np(prediction_resampled_sitk[0])
-                else:
-                    prediction_resampled_np[..., int(landmark_id) + 1] = utils.sitk_np.sitk_to_np(prediction_resampled_sitk[0])
-            prediction_labels = segmentation_test.get_label_image(prediction_resampled_np, reference_sitk=input_image)
-            # delete to save memory
-            del prediction_resampled_np
-            utils.io.image.write(prediction_labels, self.output_file_for_current_iteration(image_id + '.mha'))
+                if self.has_validation_groundtruth:
+                    segmentation_statistics.add_labels(image_id, prediction_labels, groundtruth)
 
+                print_progress_bar(i, len(self.test_id_list), prefix='Testing ', suffix=' complete')
+
+            # finalize loss values
             if self.has_validation_groundtruth:
-                segmentation_statistics.add_labels(image_id, prediction_labels, groundtruth)
-
-            print_progress_bar(i, len(self.test_id_list), prefix='Testing ', suffix=' complete')
-
-        # finalize loss values
-        if self.has_validation_groundtruth:
-            segmentation_statistics.finalize()
-            dice_list = segmentation_statistics.get_metric_mean_list('dice')
-            mean_dice = np.nanmean(dice_list)
-            dice_list = [mean_dice] + dice_list
-            hausdorff_list = segmentation_statistics.get_metric_mean_list('h')
-            mean_hausdorff = np.mean(hausdorff_list)
-            hausdorff_list = [mean_hausdorff] + hausdorff_list
-            summary_values = OrderedDict(list(zip(self.dice_names, dice_list)) + list(zip(self.hausdorff_names, hausdorff_list)))
-            self.val_loss_aggregator.finalize(self.current_iter, summary_values=summary_values)
+                segmentation_statistics.finalize()
+                dice_list = segmentation_statistics.get_metric_mean_list('dice')
+                mean_dice = np.nanmean(dice_list)
+                dice_list = [mean_dice] + dice_list
+                hausdorff_list = segmentation_statistics.get_metric_mean_list('h')
+                mean_hausdorff = np.mean(hausdorff_list)
+                hausdorff_list = [mean_hausdorff] + hausdorff_list
+                summary_values = OrderedDict(list(zip(self.dice_names, dice_list)) + list(zip(self.hausdorff_names, hausdorff_list)))
+                self.val_loss_aggregator.finalize(self.current_iter, summary_values=summary_values)
 
 
 if __name__ == '__main__':
