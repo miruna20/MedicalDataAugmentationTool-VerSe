@@ -6,6 +6,7 @@ import tensorflow as tf
 import utils.io.image
 from tensorflow_train.data_generator import DataGenerator
 from tensorflow_train.losses.semantic_segmentation_losses import sigmoid_cross_entropy_with_logits
+from tensorflow_train.losses.semantic_segmentation_losses import MSE
 from tensorflow_train.train_loop import MainLoopBase
 import utils.sitk_image
 import utils.sitk_np
@@ -91,7 +92,12 @@ class MainLoop(MainLoopBase):
         self.dice_names = ['mean_dice'] + list(map(lambda x: 'dice_{}'.format(x), range(self.num_labels_all)))
         self.hausdorff_names = ['mean_h'] + list(map(lambda x: 'h_{}'.format(x), range(self.num_labels)))
         self.additional_summaries_placeholders_val = dict([(name, create_summary_placeholder(name)) for name in (self.dice_names + self.hausdorff_names)])
-        self.loss_function = sigmoid_cross_entropy_with_logits
+
+        if self.disorder_context:
+            #use the l2 loss to rematch the puzzle
+            self.loss_function = MSE
+        else:
+            self.loss_function = sigmoid_cross_entropy_with_logits
 
         self.setup_base_folder = os.path.join(self.local_base_folder, 'setup')
         if cv in [0, 1, 2]:
