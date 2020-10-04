@@ -9,6 +9,7 @@ import numpy as np
 import os
 import traceback
 import tensorflow as tf
+import nibabel as nib
 
 import utils.io.image
 import utils.io.text
@@ -34,6 +35,8 @@ class MainLoop(MainLoopBase):
         self.padding = 'same'
         self.image_size = image_size
         self.image_spacing = image_spacing
+        self.disorder_images = False
+        self.disorder_context_mode = True
 
     def init_networks(self):
         network_image_size = list(reversed(self.image_size))
@@ -56,7 +59,10 @@ class MainLoop(MainLoopBase):
         concat_axis = 1 if self.data_format == 'channels_first' else 4
         self.data_heatmap_concat_val = tf.concat([self.data_val, self.single_heatmap_val], axis=concat_axis)
         self.prediction_val = training_net(self.data_heatmap_concat_val, num_labels=self.num_labels, is_training=False, actual_network=self.unet, padding=self.padding, data_format=self.data_format, **self.network_parameters)
-        self.prediction_softmax_val = tf.nn.sigmoid(self.prediction_val)
+        if self.disorder_context_mode:
+            self.prediction_softmax_val = self.prediction_val
+        else:
+            self.prediction_softmax_val = tf.nn.sigmoid(self.prediction_val)
 
     def test_full_image(self, image, heatmap):
         feed_dict = {self.data_val: np.expand_dims(image, axis=0),
@@ -74,6 +80,8 @@ class InferenceLoop(object):
         #self.load_model_filenames = ['/models/vertebrae_segmentation/model']
         #self.image_base_folder = '/tmp/data_reoriented'
         #self.setup_base_folder = '/tmp/'
+        self.disorder_images = False
+        self.disorder_context_mode = True
         self.image_base_folder = image_base_folder
         self.setup_base_folder = setup_base_folder
         self.load_model_filenames = load_model_filenames
@@ -98,6 +106,8 @@ class InferenceLoop(object):
                               'heatmap_sigma': 3.0,
                               'generate_single_vertebrae_heatmap': True,
                               'data_format': self.data_format,
+                              'disorder_context_mode': self.disorder_context_mode,
+                              'disorder_images': self.disorder_images,
                               'save_debug_images': self.save_debug_images}
 
         dataset = Dataset(**dataset_parameters)
@@ -136,80 +146,145 @@ class InferenceLoop(object):
         return image, prediction, transformation
 
     def test(self):
-        print('Testing...')
 
-        channel_axis = 0
-        if self.data_format == 'channels_last':
-            channel_axis = 3
+        if self.disorder_context_mode:
+            print('Testing in Context Disordering Mode...')
 
-        if len(self.load_model_filenames) == 1:
-            self.network_loop.load_model_filename = self.load_model_filenames[0]
-            self.network_loop.load_model()
+            channel_axis = 0
+            if self.data_format == 'channels_last':
+                channel_axis = 3
 
-        labels = list(range(self.num_labels_all))
-        interpolator = 'linear'
-        filter_largest_cc = True
-        segmentation_test = SegmentationTest(labels,
-                                             channel_axis=channel_axis,
-                                             interpolator=interpolator,
-                                             largest_connected_component=False,
-                                             all_labels_are_connected=False)
+            if len(self.load_model_filenames) == 1:
+                self.network_loop.load_model_filename = self.load_model_filenames[0]
+                self.network_loop.load_model()
 
-        for image_id in self.image_id_list:
-            try:
-                print(image_id)
-                first = True
-                prediction_resampled_np = None
-                input_image = None
-                for landmark_id in self.valid_landmarks[image_id]:
-                    dataset_entry = self.dataset_val.get({'image_id': image_id, 'landmark_id' : landmark_id})
-                    datasources = dataset_entry['datasources']
-                    if first:
-                        input_image = datasources['image']
+            for image_id in self.image_id_list:
+                try:
+                    print(image_id)
+                    first = True
+                    prediction_resampled_np = None
+                    input_image = None
+
+                    for landmark_id in self.valid_landmarks[image_id]:
+                        dataset_entry = self.dataset_val.get({'image_id': image_id, 'landmark_id': landmark_id})
+                        datasources = dataset_entry['datasources']
+
+                        if first:
+                            input_image = datasources['image']
+
+                        #we obtain the reordered image which is centered on a vertebra
+                        image, prediction, transformation = self.test_full_image(dataset_entry)
+
+                        ###################################################
+                        ########only for debugging########################
+                        imageToSavenp = prediction[:, :, :, 0]
+                        img = nib.Nifti1Image(imageToSavenp, None)
+                        path = os.path.join("/home/payer/inference/debug",
+                                            "estimation_" + str(image_id) + "_" + str(landmark_id) + ".nii.gz")
+                        nib.save(img, path)
+
+                        imageToSavenp = image[:, :, :, 0]
+                        img = nib.Nifti1Image(imageToSavenp, None)
+                        path = os.path.join("/home/payer/inference/debug",
+                                            "image_" + str(image_id) + "_" + str(landmark_id) + ".nii.gz")
+                        nib.save(img, path)
+                        ##################################################
+                        ###################################################
+
+                        origin = transformation.TransformPoint(np.zeros(3, np.float64))
+
+                        if self.save_debug_images:
+                            utils.io.image.write_multichannel_np(image, self.output_file_for_current_iteration(
+                                image_id + '_' + landmark_id + '_input.mha'), normalization_mode='min_max',
+                                                                 split_channel_axis=True, sitk_image_mode='default',
+                                                                 data_format=self.data_format, image_type=np.uint8,
+                                                                 spacing=self.image_spacing, origin=origin)
+                            utils.io.image.write_multichannel_np(prediction, self.output_file_for_current_iteration(
+                                image_id + '_' + landmark_id + '_prediction.mha'), normalization_mode=(0, 1),
+                                                                 split_channel_axis=True, sitk_image_mode='default',
+                                                                 data_format=self.data_format, image_type=np.uint8,
+                                                                 spacing=self.image_spacing, origin=origin)
+
+                except:
+                    print(traceback.format_exc())
+                    print('ERROR predicting', image_id)
+                    pass
+
+        else:
+            print('Testing...')
+
+            channel_axis = 0
+            if self.data_format == 'channels_last':
+                channel_axis = 3
+
+            if len(self.load_model_filenames) == 1:
+                self.network_loop.load_model_filename = self.load_model_filenames[0]
+                self.network_loop.load_model()
+
+            labels = list(range(self.num_labels_all))
+            interpolator = 'linear'
+            filter_largest_cc = True
+            segmentation_test = SegmentationTest(labels,
+                                                 channel_axis=channel_axis,
+                                                 interpolator=interpolator,
+                                                 largest_connected_component=False,
+                                                 all_labels_are_connected=False)
+
+            for image_id in self.image_id_list:
+                try:
+                    print(image_id)
+                    first = True
+                    prediction_resampled_np = None
+                    input_image = None
+                    for landmark_id in self.valid_landmarks[image_id]:
+                        dataset_entry = self.dataset_val.get({'image_id': image_id, 'landmark_id' : landmark_id})
+                        datasources = dataset_entry['datasources']
+                        if first:
+                            input_image = datasources['image']
+                            if self.data_format == 'channels_first':
+                                prediction_resampled_np = np.zeros([self.num_labels_all] + list(reversed(input_image.GetSize())), dtype=np.float16)
+                                prediction_resampled_np[0, ...] = 0.5
+                            else:
+                                prediction_resampled_np = np.zeros(list(reversed(input_image.GetSize())) + [self.num_labels_all], dtype=np.float16)
+                                prediction_resampled_np[..., 0] = 0.5
+                            first = False
+
+                        image, prediction, transformation = self.test_full_image(dataset_entry)
+
+                        origin = transformation.TransformPoint(np.zeros(3, np.float64))
+                        if filter_largest_cc:
+                            prediction_thresh_np = (prediction > 0.5).astype(np.uint8)
+                            if self.data_format == 'channels_first':
+                                largest_connected_component = utils.np_image.largest_connected_component(prediction_thresh_np[0])
+                                prediction_thresh_np[largest_connected_component[None, ...] == 1] = 0
+                            else:
+                                largest_connected_component = utils.np_image.largest_connected_component(prediction_thresh_np[..., 0])
+                                prediction_thresh_np[largest_connected_component[..., None] == 1] = 0
+                            prediction[prediction_thresh_np == 1] = 0
+
+                        if self.save_debug_images:
+                            utils.io.image.write_multichannel_np(image, self.output_file_for_current_iteration(image_id + '_' + landmark_id + '_input.mha'), normalization_mode='min_max', split_channel_axis=True, sitk_image_mode='default', data_format=self.data_format, image_type=np.uint8, spacing=self.image_spacing, origin=origin)
+                            utils.io.image.write_multichannel_np(prediction, self.output_file_for_current_iteration(image_id + '_' + landmark_id + '_prediction.mha'), normalization_mode=(0, 1), split_channel_axis=True, sitk_image_mode='default', data_format=self.data_format, image_type=np.uint8, spacing=self.image_spacing, origin=origin)
+
+                        prediction_resampled_sitk = utils.sitk_image.transform_np_output_to_sitk_input(output_image=prediction,
+                                                                                            output_spacing=self.image_spacing,
+                                                                                            channel_axis=channel_axis,
+                                                                                            input_image_sitk=input_image,
+                                                                                            transform=transformation,
+                                                                                            interpolator=interpolator,
+                                                                                            output_pixel_type=sitk.sitkFloat32)
                         if self.data_format == 'channels_first':
-                            prediction_resampled_np = np.zeros([self.num_labels_all] + list(reversed(input_image.GetSize())), dtype=np.float16)
-                            prediction_resampled_np[0, ...] = 0.5
+                            prediction_resampled_np[int(landmark_id) + 1] = utils.sitk_np.sitk_to_np(prediction_resampled_sitk[0])
                         else:
-                            prediction_resampled_np = np.zeros(list(reversed(input_image.GetSize())) + [self.num_labels_all], dtype=np.float16)
-                            prediction_resampled_np[..., 0] = 0.5
-                        first = False
-                    
-                    image, prediction, transformation = self.test_full_image(dataset_entry)
-
-                    origin = transformation.TransformPoint(np.zeros(3, np.float64))
-                    if filter_largest_cc:
-                        prediction_thresh_np = (prediction > 0.5).astype(np.uint8)
-                        if self.data_format == 'channels_first':
-                            largest_connected_component = utils.np_image.largest_connected_component(prediction_thresh_np[0])
-                            prediction_thresh_np[largest_connected_component[None, ...] == 1] = 0
-                        else:
-                            largest_connected_component = utils.np_image.largest_connected_component(prediction_thresh_np[..., 0])
-                            prediction_thresh_np[largest_connected_component[..., None] == 1] = 0
-                        prediction[prediction_thresh_np == 1] = 0
-                    
-                    if self.save_debug_images:
-                        utils.io.image.write_multichannel_np(image, self.output_file_for_current_iteration(image_id + '_' + landmark_id + '_input.mha'), normalization_mode='min_max', split_channel_axis=True, sitk_image_mode='default', data_format=self.data_format, image_type=np.uint8, spacing=self.image_spacing, origin=origin)
-                        utils.io.image.write_multichannel_np(prediction, self.output_file_for_current_iteration(image_id + '_' + landmark_id + '_prediction.mha'), normalization_mode=(0, 1), split_channel_axis=True, sitk_image_mode='default', data_format=self.data_format, image_type=np.uint8, spacing=self.image_spacing, origin=origin)
-
-                    prediction_resampled_sitk = utils.sitk_image.transform_np_output_to_sitk_input(output_image=prediction,
-                                                                                        output_spacing=self.image_spacing,
-                                                                                        channel_axis=channel_axis,
-                                                                                        input_image_sitk=input_image,
-                                                                                        transform=transformation,
-                                                                                        interpolator=interpolator,
-                                                                                        output_pixel_type=sitk.sitkFloat32)
-                    if self.data_format == 'channels_first':
-                        prediction_resampled_np[int(landmark_id) + 1] = utils.sitk_np.sitk_to_np(prediction_resampled_sitk[0])
-                    else:
-                        prediction_resampled_np[..., int(landmark_id) + 1] = utils.sitk_np.sitk_to_np(prediction_resampled_sitk[0])
-                prediction_labels = segmentation_test.get_label_image(prediction_resampled_np, reference_sitk=input_image, image_type=np.uint16)
-                # delete to save memory
-                del prediction_resampled_np
-                utils.io.image.write(prediction_labels, self.output_file_for_current_iteration(image_id + '_seg.nii.gz'))
-            except:
-                print(traceback.format_exc())
-                print('ERROR predicting', image_id)
-                pass
+                            prediction_resampled_np[..., int(landmark_id) + 1] = utils.sitk_np.sitk_to_np(prediction_resampled_sitk[0])
+                    prediction_labels = segmentation_test.get_label_image(prediction_resampled_np, reference_sitk=input_image, image_type=np.uint16)
+                    # delete to save memory
+                    del prediction_resampled_np
+                    utils.io.image.write(prediction_labels, self.output_file_for_current_iteration(image_id + '_seg.nii.gz'))
+                except:
+                    print(traceback.format_exc())
+                    print('ERROR predicting', image_id)
+                    pass
 
 
 if __name__ == '__main__':

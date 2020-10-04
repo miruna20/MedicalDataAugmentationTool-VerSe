@@ -61,6 +61,8 @@ class Dataset(object):
                  heatmap_sigma=3.0,
                  spine_heatmap_sigma=3.0,
                  data_format='channels_first',
+                 disorder_context_mode=False,
+                 disorder_images=False,
                  save_debug_images=False):
         """
         Initializer.
@@ -117,6 +119,8 @@ class Dataset(object):
         self.random_intensity_shift = random_intensity_shift
         self.random_intensity_scale = random_intensity_scale
         self.random_translation_single_landmark = random_translation_single_landmark
+        self.disorder_context_mode = disorder_context_mode
+        self.disorder_images = disorder_images
 
         self.num_landmarks = num_landmarks
         self.num_labels = num_labels
@@ -228,7 +232,9 @@ class Dataset(object):
                                                            set_zero_origin=False,
                                                            set_identity_direction=False,
                                                            set_identity_spacing=False,
-                                                           sitk_pixel_type=sitk.sitkUInt8,
+                                                           sitk_pixel_type=sitk.sitkInt16 if self.disorder_context_mode else sitk.sitkUInt8,
+                                                           #Apply the same preprocessing to the GT as to the input pic
+                                                           preprocessing=self.preprocessing if self.disorder_context_mode else None,
                                                            name='labels',
                                                            parents=[iterator])
         if self.generate_landmarks or self.generate_heatmaps or self.generate_spine_heatmap or self.generate_single_vertebrae or self.generate_single_vertebrae_heatmap or (self.translate_to_center_landmarks and not self.load_spine_landmarks):
@@ -254,6 +260,7 @@ class Dataset(object):
                                                   image_size,
                                                   self.image_spacing,
                                                   interpolator='linear',
+                                                  context_disordering=self.disorder_images,
                                                   post_processing_np=image_post_processing,
                                                   data_format=self.data_format,
                                                   resample_default_pixel_value=self.image_default_pixel_value,
@@ -264,6 +271,7 @@ class Dataset(object):
                                                               image_size,
                                                               self.image_spacing,
                                                               interpolator='nearest',
+                                                              context_disordering=self.disorder_images,
                                                               data_format=self.data_format,
                                                               resample_default_pixel_value=0,
                                                               name='landmark_mask',
@@ -272,8 +280,9 @@ class Dataset(object):
             generators_dict['labels'] = ImageGenerator(self.dim,
                                                        image_size,
                                                        self.image_spacing,
-                                                       interpolator='nearest',
-                                                       post_processing_np=self.split_labels,
+                                                       interpolator='linear' if self.disorder_context_mode else 'nearest',
+                                                       context_disordering=False,
+                                                       post_processing_np=image_post_processing,
                                                        data_format=self.data_format,
                                                        name='labels',
                                                        parents=[datasources['labels'], transformation])
@@ -311,15 +320,30 @@ class Dataset(object):
                                                                          data_format=self.data_format,
                                                                          name='single_heatmap',
                                                                          parents=[single_landmark, transformation])
+        #ToDo generators_dict['single_label'] should contain the preprocessed and postprocessed image
         if self.generate_single_vertebrae:
-            if self.data_format == 'channels_first':
-                generators_dict['single_label'] = LambdaNode(lambda id_dict, images: images[int(id_dict['landmark_id']) + 1:int(id_dict['landmark_id']) + 2, ...],
-                                                             name='single_label',
-                                                             parents=[iterator, generators_dict['labels']])
+            if not self.disorder_context_mode:
+                if self.data_format == 'channels_first':
+                    generators_dict['single_label'] = LambdaNode(lambda id_dict, images: images[int(id_dict['landmark_id']) + 1:int(id_dict['landmark_id']) + 2, ...],
+                                                                 name='single_label',
+                                                                 parents=[iterator, generators_dict['labels']])
+                else:
+                    generators_dict['single_label'] = LambdaNode(lambda id_dict, images: images[..., int(id_dict['landmark_id']) + 1:int(id_dict['landmark_id']) + 2],
+                                                                 name='single_label',
+                                                                 parents=[iterator, generators_dict['labels']])
             else:
-                generators_dict['single_label'] = LambdaNode(lambda id_dict, images: images[..., int(id_dict['landmark_id']) + 1:int(id_dict['landmark_id']) + 2],
-                                                             name='single_label',
-                                                             parents=[iterator, generators_dict['labels']])
+                #single_label should have the same preprocessing and postprocessing like image without the context disordering
+                if self.data_format == 'channels_first':
+                    generators_dict['single_label'] = LambdaNode(lambda id_dict,images: images,
+                                                                 name='single_label',
+                                                                 parents=[iterator, generators_dict['labels']])
+
+
+                else:
+                    generators_dict['single_label'] = LambdaNode(lambda id_dict, images: images,
+                                                                 name='single_label',
+                                                                 parents=[iterator, generators_dict['labels']])
+
         if self.generate_spine_heatmap:
             generators_dict['spine_heatmap'] = LambdaNode(lambda images: gaussian(np.sum(images, axis=0 if self.data_format == 'channels_first' else -1, keepdims=True), sigma=self.spine_heatmap_sigma),
                                                           name='spine_heatmap',
@@ -386,12 +410,18 @@ class Dataset(object):
             single_landmark = LambdaNode(lambda id_dict, landmarks: [landmarks[int(id_dict['landmark_id'])]],
                                          parents=[iterator, datasources['landmarks']])
             kwparents['landmarks'] = single_landmark
+            #ToDo understand better what is meant by this:
+            #landmark.Center centers the given landmark at the origin
+            #uses the mean of all landmarks as the center coordinate.
             transformation_list.append(landmark.Center(self.dim, True))
+            #translation transformation with a fixed offset
             transformation_list.append(translation.Fixed(self.dim, [0, 20, 0]))
         else:
             transformation_list.append(translation.InputCenterToOrigin(self.dim))
         if self.translate_by_random_factor:
             transformation_list.append(translation.RandomFactorInput(self.dim, [0, 0, 0.5], [0, 0, self.image_spacing[2] * image_size[2]]))
+
+        #random augmentation is performed here
         transformation_list.extend([translation.Random(self.dim, [self.random_translation] * self.dim),
                                     rotation.Random(self.dim, [self.random_rotate] * self.dim),
                                     scale.RandomUniform(self.dim, self.random_scale),
@@ -420,7 +450,7 @@ class Dataset(object):
             transformation_list.append(landmark.Center(self.dim, True, used_dimensions=[True, True, False]))
         elif self.generate_single_vertebrae or self.generate_single_vertebrae_heatmap:
             single_landmark = LambdaNode(lambda id_dict, landmarks: [landmarks[int(id_dict['landmark_id'])]],
-                                         parents=[iterator, datasources['landmarks']])
+                                         parents=[iterator, datasources['landmarks']], name='single_landmark')
             kwparents['landmarks'] = single_landmark
             transformation_list.append(landmark.Center(self.dim, True))
             transformation_list.append(translation.Fixed(self.dim, [0, 20, 0]))
@@ -438,16 +468,24 @@ class Dataset(object):
         iterator = self.iterator(self.train_file, True)
         sources = self.datasources(iterator, True)
         image_size = self.image_size
-        reference_transformation = self.spatial_transformation_augmented(iterator, sources, image_size)
+        #in case we pretrain with context disordering do not apply data augmentation
+        if self.disorder_context_mode:
+            reference_transformation = self.spatial_transformation(iterator, sources, image_size)
+        else:
+            reference_transformation = self.spatial_transformation_augmented(iterator,sources,image_size)
+
+        #ToDo: should the raw input be posprocessed randomly or not?
         generators = self.data_generators(iterator, sources, reference_transformation, self.postprocessing_random, True, image_size)
-        if self.generate_single_vertebrae and not self.generate_labels:
+
+
+        if self.generate_single_vertebrae and not self.generate_labels and not self.disorder_context_mode:
             del generators['labels']
 
         return GraphDataset(data_generators=list(generators.values()),
                             data_sources=list(sources.values()),
                             transformations=[reference_transformation],
                             iterator=iterator,
-                            debug_image_folder='debug_train' if self.save_debug_images else None)
+                            debug_image_folder='/home/payer/training/debug_train' if self.save_debug_images else None)
 
     def dataset_val(self):
         """
@@ -465,11 +503,11 @@ class Dataset(object):
             image_size = self.image_size
         reference_transformation = self.spatial_transformation(iterator, sources, image_size)
         generators = self.data_generators(iterator, sources, reference_transformation, self.postprocessing, False, image_size)
-        if self.generate_single_vertebrae and not self.generate_labels:
+        if self.generate_single_vertebrae and not self.generate_labels and not self.disorder_context_mode:
             del generators['labels']
 
         return GraphDataset(data_generators=list(generators.values()),
                             data_sources=list(sources.values()),
                             transformations=[reference_transformation],
                             iterator=iterator,
-                            debug_image_folder='debug_val' if self.save_debug_images else None)
+                            debug_image_folder='/home/payer/training/debug_val' if self.save_debug_images else None)

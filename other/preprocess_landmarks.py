@@ -34,7 +34,7 @@ if __name__ == '__main__':
         verse_dataset_folder = '../verse2020_dataset'
         landmark_mapping = dict([(i + 1, i) for i in range(25)] + [(28, 25)])
     else:
-        verse_dataset_folder = '../verse2019_dataset'
+        verse_dataset_folder = '/home/miruna20/Documents/Datasets/Datasets_Cervical/verse19/training'
         landmark_mapping = dict([(i + 1, i) for i in range(25)])
     num_landmarks = len(landmark_mapping)
     landmarks_dict = {}
@@ -51,6 +51,7 @@ if __name__ == '__main__':
         print(filename_wo_folder_and_ext)
         # get image meta data
         image_meta_data = read_meta_data(os.path.join(verse_dataset_folder, 'images_reoriented', image_id + '.nii.gz'))
+
         spacing = np.array(image_meta_data.GetSpacing())
         origin = np.array(image_meta_data.GetOrigin())
         direction = np.array(image_meta_data.GetDirection()).reshape([3, 3])
@@ -61,6 +62,9 @@ if __name__ == '__main__':
             # load json file
             json_data = json.load(f)
             for landmark in json_data:
+                #skip non cervical data 
+                if int(landmark['label']) > 7:
+                    continue
                 # convert verse coordinate system to physical coordinates
                 if verse2020:
                     coords = np.array([size[0] * spacing[0] - float(landmark['Z']), float(landmark['X']), size[2] * spacing[2] - float(landmark['Y'])])

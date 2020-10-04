@@ -23,9 +23,11 @@ import SimpleITK as sitk
 import utils.io.text
 import utils.np_image
 import nibabel as nib
+import argparse
+
 
 class MainLoop(MainLoopBase):
-    def __init__(self, cv, network, unet, network_parameters, learning_rate, output_folder_name=''):
+    def __init__(self, cv, network, unet, network_parameters, learning_rate, output_base_folder, output_folder_name='', load_model_filename=None):
         """
         Initializer.
         :param cv: The cv fold. 0, 1, 2 for CV; 'train_all' for training on whole dataset.
@@ -37,17 +39,17 @@ class MainLoop(MainLoopBase):
         """
         super().__init__()
         self.batch_size = 1
-        self.disorder_context = True
+        self.disorder_context_mode = True
+        self.disorder_images = True
         self.learning_rates = [learning_rate, learning_rate * 0.5, learning_rate * 0.1]
         self.learning_rate_boundaries = [20000, 30000]
-        #self.max_iter = 50000
-        self.max_iter = 500
-        #self.test_iter = 5000
-        self.test_iter = 50
-        #self.disp_iter = 100
-        self.disp_iter = 10
-        #self.snapshot_iter = 5000
-        self.snapshot_iter = 50
+        self.max_iter = 50000
+        self.test_iter = 1000
+        self.disp_iter = 100
+        #self.max_iter = 5
+        #self.test_iter = 2
+        #self.disp_iter = 1
+        self.snapshot_iter = 5000
         self.test_initialization = False
         self.current_iter = 0
         self.reg_constant = 0.000001
@@ -60,17 +62,20 @@ class MainLoop(MainLoopBase):
         self.network_parameters = network_parameters
         self.padding = 'same'
         self.clip_gradient_global_norm = 1.0
+        self.load_model_filename = load_model_filename
+        self.output_base_folder = output_base_folder
+
 
         self.use_pyro_dataset = False
         self.save_output_images = True
         self.save_output_images_as_uint = True  # set to False, if you want to see the direct network output
         #changed the debug_images to True so that visualization is enabled
-        self.save_debug_images = True
-        self.has_validation_groundtruth = cv in [0, 1, 2]
+        self.save_debug_images = False
+        self.has_validation_groundtruth = cv in [0, 1, 2] if not self.disorder_context_mode else True
         self.local_base_folder = '../verse2019_dataset'
         self.image_size = [128, 128, 96]
         self.image_spacing = [1] * 3
-        self.output_folder = os.path.join('./output/vertebrae_segmentation/', network.__name__, unet.__name__, output_folder_name, str(cv), self.output_folder_timestamp())
+        self.output_folder = os.path.join(output_base_folder, network.__name__, unet.__name__, output_folder_name, str(cv), self.output_folder_timestamp())
         dataset_parameters = {'base_folder': self.local_base_folder,
                               'image_size': self.image_size,
                               'image_spacing': self.image_spacing,
@@ -80,7 +85,8 @@ class MainLoop(MainLoopBase):
                               'heatmap_sigma': 3.0,
                               'generate_single_vertebrae_heatmap': True,
                               'generate_single_vertebrae': True,
-                              'disorder_context':self.disorder_context,
+                              'disorder_context_mode':self.disorder_context_mode,
+                              'disorder_images': self.disorder_images,
                               'save_debug_images': self.save_debug_images}
 
         dataset = Dataset(**dataset_parameters)
@@ -97,7 +103,7 @@ class MainLoop(MainLoopBase):
         self.hausdorff_names = ['mean_h'] + list(map(lambda x: 'h_{}'.format(x), range(self.num_labels)))
         self.additional_summaries_placeholders_val = dict([(name, create_summary_placeholder(name)) for name in (self.dice_names + self.hausdorff_names)])
 
-        if self.disorder_context:
+        if self.disorder_context_mode:
             #use the l2 loss to rematch the puzzle
             self.loss_function = MSE
         else:
@@ -161,7 +167,10 @@ class MainLoop(MainLoopBase):
         self.data_val, self.mask_val, self.single_heatmap_val = create_placeholders_tuple(data_generator_entries, data_types=data_generator_types, shape_prefix=[1])
         self.data_heatmap_concat_val = tf.concat([self.data_val, self.single_heatmap_val], axis=1)
         self.prediction_val = training_net(self.data_heatmap_concat_val, num_labels=self.num_labels, is_training=False, actual_network=self.unet, padding=self.padding, **self.network_parameters)
-        self.prediction_softmax_val = tf.nn.sigmoid(self.prediction_val)
+        if self.disorder_context_mode:
+            self.prediction_softmax_val = self.prediction_val
+        else:
+            self.prediction_softmax_val = tf.nn.sigmoid(self.prediction_val)
 
         if self.has_validation_groundtruth:
             self.loss_val = self.loss_function(labels=self.mask_val, logits=self.prediction_val, data_format=self.data_format)
@@ -197,14 +206,19 @@ class MainLoop(MainLoopBase):
         """
         The test function. Performs inference on the the validation images and calculates the loss.
         """
-
-        if(self.disorder_context):
+        if(self.disorder_context_mode):
             print("Testing in Context Disordering Mode")
             channel_axis = 0
             if self.data_format == 'channels_last':
                 channel_axis = 3
 
+            #in every validation iteration print the average value loss over all pictures
+            average_val_loss = 0
+            file = open(os.path.join(self.output_base_folder, "training_res.txt"), "a")
+
             for i, image_id in enumerate(self.test_id_list):
+                mse_values_one_image = []
+                mse_GT_shuffled_values = []
                 first = True
                 input_image = None
                 groundtruth = None
@@ -212,25 +226,62 @@ class MainLoop(MainLoopBase):
                 for landmark_id in self.valid_landmarks[image_id]:
                     dataset_entry = self.dataset_val.get({'image_id': image_id, 'landmark_id': landmark_id})
                     datasources = dataset_entry['datasources']
-                    if first:
-                        input_image = datasources['image']
-                        if self.has_validation_groundtruth:
-                            groundtruth = datasources['labels']
-                        first = False
+                    input_image = datasources['image']
+                    if self.has_validation_groundtruth:
+                        groundtruth = datasources['labels']
+
 
                     image, prediction, transformation = self.test_full_image(dataset_entry)
+                    GT = dataset_entry['generators']['labels']
 
+                    """
+                    #save prediction
                     imageToSavenp = prediction[0, :, :, :]
                     img = nib.Nifti1Image(imageToSavenp, None)
-                    path = os.path.join("/home/payer/training/debug_train", "estimation_" + str(image_id) + "_" + str(landmark_id) + "_" + str(self.current_iter) + ".nii.gz")
+                    path = os.path.join(self.output_base_folder, "estimation_" + str(image_id) + "_" + str(landmark_id) + "_" + str(self.current_iter) + ".nii.gz")
                     nib.save(img, path)
-
+                    """
+                    #save estimation
                     imageToSavenp = image[0, :, :, :]
                     img = nib.Nifti1Image(imageToSavenp, None)
-                    path = os.path.join("/home/payer/training/debug_train",
-                                        "image_" + str(image_id) + "_" + str(landmark_id) + "_" + str(
-                                            self.current_iter) + ".nii.gz")
+                    path = os.path.join(self.output_base_folder,"image_" + str(image_id) + "_" + str(landmark_id) + "_" + str(self.current_iter)   + ".nii.gz")
                     nib.save(img, path)
+                    """
+                    #save GT
+                    imageToSavenp = GT[0, :, :, :]
+                    img = nib.Nifti1Image(imageToSavenp, None)
+                    path = os.path.join(self.output_base_folder, "GT_" + str(image_id) + "_" + str(landmark_id) + "_" + str(self.current_iter)  + ".nii.gz")
+                    nib.save(img, path)
+
+                    """
+
+                    mse = np.mean((GT - prediction)**2)
+                    #loss is a scalar
+                    mse_values_one_image.append(mse)
+
+                    #if it s the first time we perform validation
+                    #calculate mse between GT and saved image
+                    if self.current_iter == self.test_iter:
+                        mse_GT_shuffled = np.mean((GT - image)**2)
+                        mse_GT_shuffled_values.append(mse_GT_shuffled)
+
+                #after predicting all crops average over the loss and save it
+                average_val_image = sum(mse_values_one_image) / len(mse_values_one_image)
+                line_GT_estimation_mse = "In iteration: " + str(self.current_iter) +  ", image: " + str(image_id) + " has loss: " + str(average_val_image)
+                average_val_loss += average_val_image
+
+                file.write(line_GT_estimation_mse + "\n")
+
+                #if it s the first time we perform validation then write the mse of the image compared to the GT to the file
+                if self.current_iter == self.test_iter:
+                    line_GT_shuffled_mse = "In iteration: " + str(self.current_iter) + ", the shuffled image: " + str(image_id) + "and its GT have loss: " + str(sum(mse_GT_shuffled_values) / len(mse_GT_shuffled_values))
+                    file.write(line_GT_shuffled_mse + "\n")
+
+            #when the validation round is over print the average loss over all 4 images
+            line_avg_val_loss = "In iteration: " + str(self.current_iter) + " average validation loss: " + str(average_val_loss/4)
+            file.write(line_avg_val_loss+ "\n")
+            file.close()
+
 
         else:
             print('Testing...')
@@ -326,8 +377,12 @@ class MainLoop(MainLoopBase):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--output_folder', type=str, required=True)
+    parser_args = parser.parse_args()
     network_parameters = OrderedDict([('num_filters_base', 64), ('double_features_per_level', False), ('num_levels', 5), ('activation', 'relu'), ('dropout_ratio', 0.25)])
-    for cv in ['train_all']:
-        loop = MainLoop(cv, network_u, UnetClassicAvgLinear3d, network_parameters, 0.0001, output_folder_name='baseline')
+    for cv in [0]:
+        loop = MainLoop(cv, network_u, UnetClassicAvgLinear3d, network_parameters, 0.0001, output_folder_name='baseline',output_base_folder = parser_args.output_folder)
         loop.run()
+
 

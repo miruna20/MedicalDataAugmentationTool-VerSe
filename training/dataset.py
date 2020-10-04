@@ -61,8 +61,9 @@ class Dataset(object):
                  heatmap_sigma=3.0,
                  spine_heatmap_sigma=3.0,
                  data_format='channels_first',
-                 save_debug_images=False,
-                 disorder_context=False):
+                 disorder_context_mode=False,
+                 disorder_images=False,
+                 save_debug_images=False):
         """
         Initializer.
         :param image_size: Network input image size.
@@ -118,7 +119,8 @@ class Dataset(object):
         self.random_intensity_shift = random_intensity_shift
         self.random_intensity_scale = random_intensity_scale
         self.random_translation_single_landmark = random_translation_single_landmark
-        self.disorder_context = disorder_context
+        self.disorder_context_mode = disorder_context_mode
+        self.disorder_images = disorder_images
 
         self.num_landmarks = num_landmarks
         self.num_labels = num_labels
@@ -230,9 +232,9 @@ class Dataset(object):
                                                            set_zero_origin=False,
                                                            set_identity_direction=False,
                                                            set_identity_spacing=False,
-                                                           sitk_pixel_type=sitk.sitkInt16 if self.disorder_context else sitk.sitkUInt8,
-                                                           #Do not apply any kind of preprocessing for the GT
-                                                           preprocessing=None,
+                                                           sitk_pixel_type=sitk.sitkInt16 if self.disorder_context_mode else sitk.sitkUInt8,
+                                                           #Apply the same preprocessing to the GT as to the input pic
+                                                           preprocessing=self.preprocessing if self.disorder_context_mode else None,
                                                            name='labels',
                                                            parents=[iterator])
         if self.generate_landmarks or self.generate_heatmaps or self.generate_spine_heatmap or self.generate_single_vertebrae or self.generate_single_vertebrae_heatmap or (self.translate_to_center_landmarks and not self.load_spine_landmarks):
@@ -245,7 +247,7 @@ class Dataset(object):
             datasources_dict['spine_landmarks'] = LandmarkDataSource(self.spine_landmarks_file, 1, self.dim, name='spine_landmarks', parents=[iterator])
         return datasources_dict
 
-    def data_generators(self, iterator, datasources, transformation, image_post_processing, random_translation_single_landmark, image_size):
+    def data_generators(self, iterator, datasources, transformation, image_post_processing, random_translation_single_landmark, image_size, disordering_deterministic):
         """
         Returns the data generators that process one input. See datasources() for dict values.
         :param datasources: datasources dict.
@@ -258,7 +260,8 @@ class Dataset(object):
                                                   image_size,
                                                   self.image_spacing,
                                                   interpolator='linear',
-                                                  context_disordering=self.disorder_context,
+                                                  context_disordering=self.disorder_images,
+                                                  disordering_deterministic = disordering_deterministic,
                                                   post_processing_np=image_post_processing,
                                                   data_format=self.data_format,
                                                   resample_default_pixel_value=self.image_default_pixel_value,
@@ -269,7 +272,6 @@ class Dataset(object):
                                                               image_size,
                                                               self.image_spacing,
                                                               interpolator='nearest',
-                                                              context_disordering=self.disorder_context,
                                                               data_format=self.data_format,
                                                               resample_default_pixel_value=0,
                                                               name='landmark_mask',
@@ -278,7 +280,7 @@ class Dataset(object):
             generators_dict['labels'] = ImageGenerator(self.dim,
                                                        image_size,
                                                        self.image_spacing,
-                                                       interpolator='linear' if self.disorder_context else 'nearest',
+                                                       interpolator='linear' if self.disorder_context_mode else 'nearest',
                                                        context_disordering=False,
                                                        post_processing_np=image_post_processing,
                                                        data_format=self.data_format,
@@ -320,7 +322,7 @@ class Dataset(object):
                                                                          parents=[single_landmark, transformation])
         #ToDo generators_dict['single_label'] should contain the preprocessed and postprocessed image
         if self.generate_single_vertebrae:
-            if not self.disorder_context:
+            if not self.disorder_context_mode:
                 if self.data_format == 'channels_first':
                     generators_dict['single_label'] = LambdaNode(lambda id_dict, images: images[int(id_dict['landmark_id']) + 1:int(id_dict['landmark_id']) + 2, ...],
                                                                  name='single_label',
@@ -467,16 +469,16 @@ class Dataset(object):
         sources = self.datasources(iterator, True)
         image_size = self.image_size
         #in case we pretrain with context disordering do not apply data augmentation
-        if self.disorder_context:
+        if self.disorder_context_mode:
             reference_transformation = self.spatial_transformation(iterator, sources, image_size)
         else:
             reference_transformation = self.spatial_transformation_augmented(iterator,sources,image_size)
 
         #ToDo: should the raw input be posprocessed randomly or not?
-        generators = self.data_generators(iterator, sources, reference_transformation, self.postprocessing if self.disorder_context else self.postprocessing_random, True, image_size)
+        generators = self.data_generators(iterator, sources, reference_transformation, self.postprocessing if self.disorder_context_mode else self.postprocessing_random, True, image_size,disordering_deterministic=False)
 
 
-        if self.generate_single_vertebrae and not self.generate_labels and not self.disorder_context:
+        if self.generate_single_vertebrae and not self.generate_labels and not self.disorder_context_mode:
             del generators['labels']
 
         return GraphDataset(data_generators=list(generators.values()),
@@ -500,8 +502,8 @@ class Dataset(object):
         else:
             image_size = self.image_size
         reference_transformation = self.spatial_transformation(iterator, sources, image_size)
-        generators = self.data_generators(iterator, sources, reference_transformation, self.postprocessing, False, image_size)
-        if self.generate_single_vertebrae and not self.generate_labels and not self.disorder_context:
+        generators = self.data_generators(iterator, sources, reference_transformation,self.postprocessing, False, image_size, disordering_deterministic=True)
+        if self.generate_single_vertebrae and not self.generate_labels and not self.disorder_context_mode:
             del generators['labels']
 
         return GraphDataset(data_generators=list(generators.values()),
